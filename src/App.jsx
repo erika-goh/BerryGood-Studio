@@ -209,7 +209,25 @@ const MOODS = [
   "🖤 Editorial",
 ];
 
-const normalizeCardFromDB = (row) => ({
+// ─── CREATE NEW CARD TEMPLATE ────────────────────────────────────────────────
+const freshCard = () => ({
+  id: crypto.randomUUID(), // temporary id until DB returns real one
+  title: "",
+  hook: "",
+  idea: "",
+  platform: "Instagram",
+  postDate: "",
+  status: "ideation",
+  mood: "🌸 Romantic",
+  moodColors: ["#DBBABF", "#75824D"],
+  notes: "",
+  tags: [],
+  photos: [],
+  createdAt: new Date().toISOString(),
+});
+
+// DB → UI
+const fromDB = (row) => ({
   id: row.id,
   title: row.title || "",
   hook: row.hook || "",
@@ -218,14 +236,28 @@ const normalizeCardFromDB = (row) => ({
   postDate: row.post_date || "",
   status: row.status || "ideation",
   mood: row.mood || "🌸 Romantic",
-  moodColors:
-    Array.isArray(row.mood_colors) && row.mood_colors.length === 2
-      ? row.mood_colors
-      : ["#DBBABF", "#75824D"],
+  moodColors: row.mood_colors || ["#DBBABF", "#75824D"],
   notes: row.notes || "",
   tags: row.tags || [],
   photos: row.photos || [],
   createdAt: row.created_at || new Date().toISOString(),
+});
+
+// UI → DB
+const toDB = (card) => ({
+  id: card.id,
+  title: card.title,
+  hook: card.hook,
+  idea: card.idea,
+  platform: card.platform,
+  post_date: card.postDate || null,
+  status: card.status,
+  mood: card.mood,
+  mood_colors: card.moodColors,
+  notes: card.notes,
+  tags: card.tags,
+  photos: card.photos,
+  updated_at: new Date().toISOString(),
 });
 
 // ─── UTILS ───────────────────────────────────────────────────────────────────
@@ -811,7 +843,10 @@ const Modal = ({ card, onSave, onClose, onDelete, t, dark }) => {
           }}
         >
           <button
-            onClick={() => onDelete(card.id)}
+            onClick={() => {
+              onDelete(card.id);
+              onClose(); // ← THIS WAS MISSING
+            }}
             style={{
               padding: "10px 18px",
               borderRadius: "10px",
@@ -1102,7 +1137,7 @@ export default function App() {
         console.error("Fetch error:", error.message);
         // Optional: show user message
       } else {
-        setCards((data || []).map(normalizeCardFromDB));
+        setCards((data || []).map(fromDB));
       }
       setLoaded(true);
     };
@@ -1125,10 +1160,10 @@ export default function App() {
             switch (eventType) {
               case "INSERT":
                 if (prev.some((c) => c.id === newCard?.id)) return prev;
-                return [...prev, normalizeCardFromDB(newCard)];
+                return [...prev, fromDB(newCard)];
               case "UPDATE":
                 return prev.map((c) =>
-                  c.id === newCard?.id ? normalizeCardFromDB(newCard) : c,
+                  c.id === newCard?.id ? fromDB(newCard) : c,
                 );
               case "DELETE":
                 if (!oldCard?.id) return prev; // ← prevent crash
@@ -1170,70 +1205,32 @@ export default function App() {
 
   // 4. saveCard – already good, but add extra logging & handle photos explicitly
   const saveCard = async (formCard) => {
-    try {
-      const cardToSave = {
-        id:
-          formCard.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        title: formCard.title || null,
-        hook: formCard.hook || null,
-        idea: formCard.idea || null,
-        platform: formCard.platform || "Instagram",
-        post_date: formCard.postDate || null,
-        status: formCard.status || "ideation",
-        mood: formCard.mood || "🌸 Romantic",
-        mood_colors: formCard.moodColors || [],
-        notes: formCard.notes || null,
-        tags: formCard.tags || [],
-        photos: formCard.photos || [], // ← this is the field causing cache issue
-        updated_at: new Date().toISOString(),
-      };
+    const dbCard = toDB(formCard);
 
-      console.log("Attempting to save:", cardToSave); // ← debug: see what is sent
+    const isUpdate = cards.some((c) => c.id === formCard.id);
 
-      let result;
+    const query = isUpdate
+      ? supabase.from("berrygood_cards").update(dbCard).eq("id", dbCard.id)
+      : supabase.from("berrygood_cards").insert(dbCard);
 
-      const isUpdate = cards.some((c) => c.id === cardToSave.id);
+    const { data, error } = await query.select().single();
 
-      if (isUpdate) {
-        result = await supabase
-          .from("berrygood_cards")
-          .update(cardToSave)
-          .eq("id", cardToSave.id)
-          .select()
-          .single();
-      } else {
-        result = await supabase
-          .from("berrygood_cards")
-          .insert(cardToSave)
-          .select()
-          .single();
-      }
-
-      const { data, error } = result;
-
-      if (error) {
-        console.error("Supabase save error:", error);
-        alert(
-          `Save failed: ${error.message || "Unknown error"}\nCheck console.`,
-        );
-        return;
-      }
-
-      const normalized = normalizeCardFromDB(data);
-
-      setCards((prev) => {
-        const idx = prev.findIndex((c) => c.id === normalized.id);
-        if (idx !== -1)
-          return prev.map((c) => (c.id === normalized.id ? normalized : c));
-        return [...prev, normalized];
-      });
-
-      console.log("Card saved successfully:", data);
-    } catch (err) {
-      console.error("Unexpected save error:", err);
-      alert("Something went wrong – check console");
+    if (error) {
+      console.error(error);
+      alert("Save failed");
+      return;
     }
+
+    const normalized = fromDB(data);
+
+    setCards((prev) => {
+      const idx = prev.findIndex((c) => c.id === normalized.id);
+      if (idx !== -1)
+        return prev.map((c) => (c.id === normalized.id ? normalized : c));
+      return [...prev, normalized];
+    });
   };
+
   // ── FILTERS
   const searchFiltered = search
     ? cards.filter(
@@ -1751,14 +1748,11 @@ export default function App() {
       {active && (
         <Modal
           card={active}
-          t={t}
-          dark={dark}
           onSave={saveCard}
           onClose={() => setActive(null)}
-          onDelete={(id) => {
-            delCard(id);
-            setActive(null);
-          }}
+          onDelete={delCard}
+          t={t}
+          dark={dark}
         />
       )}
     </>

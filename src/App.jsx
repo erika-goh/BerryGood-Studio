@@ -209,20 +209,23 @@ const MOODS = [
   "🖤 Editorial",
 ];
 
-const freshCard = () => ({
-  id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-  title: "",
-  hook: "",
-  idea: "",
-  platform: "Instagram",
-  postDate: "",
-  status: "ideation",
-  mood: "🌸 Romantic",
-  moodColors: ["#DBBABF", "#75824D"],
-  notes: "",
-  tags: [],
-  photos: [],
-  createdAt: new Date().toISOString(),
+const normalizeCardFromDB = (row) => ({
+  id: row.id,
+  title: row.title || "",
+  hook: row.hook || "",
+  idea: row.idea || "",
+  platform: row.platform || "Instagram",
+  postDate: row.post_date || "",
+  status: row.status || "ideation",
+  mood: row.mood || "🌸 Romantic",
+  moodColors:
+    Array.isArray(row.mood_colors) && row.mood_colors.length === 2
+      ? row.mood_colors
+      : ["#DBBABF", "#75824D"],
+  notes: row.notes || "",
+  tags: row.tags || [],
+  photos: row.photos || [],
+  createdAt: row.created_at || new Date().toISOString(),
 });
 
 // ─── UTILS ───────────────────────────────────────────────────────────────────
@@ -454,7 +457,16 @@ const PhotoMoodBoard = ({ photos, onChange, t }) => {
 
 // ─── MODAL ────────────────────────────────────────────────────────────────────
 const Modal = ({ card, onSave, onClose, onDelete, t, dark }) => {
-  const [form, setForm] = useState({ ...card, photos: card.photos || [] });
+  if (!card) return null;
+
+  const [form, setForm] = useState({
+    ...card,
+    photos: card.photos || [],
+    moodColors:
+      Array.isArray(card.moodColors) && card.moodColors.length === 2
+        ? card.moodColors
+        : ["#DBBABF", "#75824D"],
+  });
   const s = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   const inp = {
@@ -857,13 +869,22 @@ const Modal = ({ card, onSave, onClose, onDelete, t, dark }) => {
 };
 
 // ─── KANBAN CARD ──────────────────────────────────────────────────────────────
+// ─── KANBAN CARD ──────────────────────────────────────────────────────────────
 const KCard = ({ card, onClick, t }) => {
   const [hov, setHov] = useState(false);
+
+  // Safely default moodColors to avoid undefined errors
+  const moodColors =
+    card.moodColors && card.moodColors.length === 2
+      ? card.moodColors
+      : ["#DBBABF", "#75824D"];
+
   const days = card.postDate
     ? Math.ceil((new Date(card.postDate) - new Date()) / 86400000)
     : null;
   const late = days !== null && days < 0;
   const photos = card.photos || [];
+  const tags = card.tags || [];
 
   return (
     <div
@@ -889,7 +910,7 @@ const KCard = ({ card, onClick, t }) => {
       <div
         style={{
           height: "3px",
-          background: `linear-gradient(90deg,${card.moodColors[0]},${card.moodColors[1]})`,
+          background: `linear-gradient(90deg,${moodColors[0]},${moodColors[1]})`,
           borderRadius: "14px 14px 0 0",
         }}
       />
@@ -946,16 +967,18 @@ const KCard = ({ card, onClick, t }) => {
                 fontFamily: "'DM Mono',monospace",
               }}
             >
-              {card.platform}
+              {card.platform || "Instagram"}
             </p>
           </div>
+
+          {/* Mood color circle when no photos */}
           {photos.length === 0 && (
             <div
               style={{
                 width: "26px",
                 height: "26px",
                 borderRadius: "8px",
-                background: `linear-gradient(135deg,${card.moodColors[0]},${card.moodColors[1]})`,
+                background: `linear-gradient(135deg,${moodColors[0]},${moodColors[1]})`,
                 flexShrink: 0,
                 marginLeft: "8px",
               }}
@@ -963,6 +986,7 @@ const KCard = ({ card, onClick, t }) => {
           )}
         </div>
 
+        {/* Hook preview */}
         {card.hook && (
           <p
             style={{
@@ -979,6 +1003,7 @@ const KCard = ({ card, onClick, t }) => {
           </p>
         )}
 
+        {/* Tags & days */}
         <div
           style={{
             display: "flex",
@@ -987,7 +1012,7 @@ const KCard = ({ card, onClick, t }) => {
           }}
         >
           <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
-            {card.tags.slice(0, 2).map((tg, i) => (
+            {tags.slice(0, 2).map((tg, i) => (
               <span
                 key={i}
                 style={{
@@ -1003,6 +1028,7 @@ const KCard = ({ card, onClick, t }) => {
               </span>
             ))}
           </div>
+
           {days !== null && (
             <span
               style={{
@@ -1064,39 +1090,49 @@ export default function App() {
 
   const t = T[dark ? "dark" : "light"];
   const sc = t.statusColors;
-
+  // 1. Initial fetch – use correct table name
   useEffect(() => {
     const fetchCards = async () => {
-      const { data, error } = await supabase.from("cards").select("*");
-      if (!error) setCards(data);
+      const { data, error } = await supabase
+        .from("berrygood_cards") // ← FIXED: correct table name
+        .select("*")
+        .order("created_at", { ascending: false }); // newest first, optional
+
+      if (error) {
+        console.error("Fetch error:", error.message);
+        // Optional: show user message
+      } else {
+        setCards((data || []).map(normalizeCardFromDB));
+      }
       setLoaded(true);
     };
     fetchCards();
   }, []);
 
+  // 2. Real-time subscription – must match table name exactly
   useEffect(() => {
-    // Subscribe to changes on the "cards" table
     const channel = supabase
-      .channel("cards_channel")
+      .channel("berrygood_cards_channel")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "cards" },
+        { event: "*", schema: "public", table: "berrygood_cards" },
         (payload) => {
+          console.log("Realtime payload:", payload); // ← add this for debugging
+
           const { eventType, new: newCard, old: oldCard } = payload;
 
           setCards((prev) => {
             switch (eventType) {
               case "INSERT":
-                // Avoid duplicates
-                if (prev.some((c) => c.id === newCard.id)) return prev;
-                return [...prev, newCard];
-
+                if (prev.some((c) => c.id === newCard?.id)) return prev;
+                return [...prev, normalizeCardFromDB(newCard)];
               case "UPDATE":
-                return prev.map((c) => (c.id === newCard.id ? newCard : c));
-
+                return prev.map((c) =>
+                  c.id === newCard?.id ? normalizeCardFromDB(newCard) : c,
+                );
               case "DELETE":
+                if (!oldCard?.id) return prev; // ← prevent crash
                 return prev.filter((c) => c.id !== oldCard.id);
-
               default:
                 return prev;
             }
@@ -1105,63 +1141,97 @@ export default function App() {
       )
       .subscribe();
 
-    // Cleanup on unmount
     return () => {
-      if (channel) channel.unsubscribe();
+      supabase.removeChannel(channel);
     };
   }, []);
 
-  // ── SAVE CARD
-  const saveCard = async (card) => {
-    // Update local state immediately
-    setCards((prev) => {
-      const exists = prev.find((c) => c.id === card.id);
-      return exists
-        ? prev.map((c) => (c.id === card.id ? card : c))
-        : [...prev, card];
-    });
-
-    try {
-      if (card.id) {
-        // Check if card already exists in Supabase
-        const { data: existing } = await supabase
-          .from("cards")
-          .select("id")
-          .eq("id", card.id)
-          .limit(1)
-          .single();
-
-        if (existing) {
-          // Update existing card
-          const { error } = await supabase
-            .from("cards")
-            .update(card)
-            .eq("id", card.id);
-          if (error) console.error("Supabase update error:", error);
-          return;
-        }
-      }
-
-      // Insert new card
-      const { data, error } = await supabase.from("cards").insert([card]);
-      if (error) console.error("Supabase insert error:", error);
-      else console.log("Card saved:", data);
-    } catch (err) {
-      console.error("Supabase save exception:", err);
-    }
-  };
-
-  // ── DELETE CARD
+  // 3. Delete – use correct table name
   const delCard = async (id) => {
-    // Update local state first
+    // Optimistic update
     setCards((prev) => prev.filter((c) => c.id !== id));
 
     try {
-      const { error } = await supabase.from("cards").delete().eq("id", id);
-      if (error) console.error("Supabase delete error:", error);
-      else console.log("Card deleted:", id);
+      const { error } = await supabase
+        .from("berrygood_cards") // ← FIXED
+        .delete()
+        .eq("id", id);
+
+      if (error) {
+        console.error("Delete failed:", error.message);
+        // Optional: rollback optimistic update if needed
+      } else {
+        console.log("Card deleted:", id);
+      }
     } catch (err) {
-      console.error("Supabase delete exception:", err);
+      console.error("Delete exception:", err);
+    }
+  };
+
+  // 4. saveCard – already good, but add extra logging & handle photos explicitly
+  const saveCard = async (formCard) => {
+    try {
+      const cardToSave = {
+        id:
+          formCard.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        title: formCard.title || null,
+        hook: formCard.hook || null,
+        idea: formCard.idea || null,
+        platform: formCard.platform || "Instagram",
+        post_date: formCard.postDate || null,
+        status: formCard.status || "ideation",
+        mood: formCard.mood || "🌸 Romantic",
+        mood_colors: formCard.moodColors || [],
+        notes: formCard.notes || null,
+        tags: formCard.tags || [],
+        photos: formCard.photos || [], // ← this is the field causing cache issue
+        updated_at: new Date().toISOString(),
+      };
+
+      console.log("Attempting to save:", cardToSave); // ← debug: see what is sent
+
+      let result;
+
+      const isUpdate = cards.some((c) => c.id === cardToSave.id);
+
+      if (isUpdate) {
+        result = await supabase
+          .from("berrygood_cards")
+          .update(cardToSave)
+          .eq("id", cardToSave.id)
+          .select()
+          .single();
+      } else {
+        result = await supabase
+          .from("berrygood_cards")
+          .insert(cardToSave)
+          .select()
+          .single();
+      }
+
+      const { data, error } = result;
+
+      if (error) {
+        console.error("Supabase save error:", error);
+        alert(
+          `Save failed: ${error.message || "Unknown error"}\nCheck console.`,
+        );
+        return;
+      }
+
+      const normalized = normalizeCardFromDB(data);
+
+      setCards((prev) => {
+        const idx = prev.findIndex((c) => c.id === normalized.id);
+        if (idx !== -1)
+          return prev.map((c) => (c.id === normalized.id ? normalized : c));
+        return [...prev, normalized];
+      });
+
+      console.log("Card saved successfully:", data);
+    } catch (err) {
+      console.error("Unexpected save error:", err);
+      alert("Something went wrong – check console");
     }
   };
   // ── FILTERS

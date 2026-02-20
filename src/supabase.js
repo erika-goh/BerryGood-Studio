@@ -1,6 +1,9 @@
+// src/supabaseClient.js
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = "https://YOUR_SUPABASE_PROJECT_ID.supabase.co";
-const supabaseKey = "YOUR_SUPABASE_ANON_KEY";
+// Grab the VITE env vars directly
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-export const supabase = createClient(supabaseUrl, supabaseKey);
+// Create the Supabase client
+export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);

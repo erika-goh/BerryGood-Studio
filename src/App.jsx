@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { supabase } from "./supabase";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PALETTE
@@ -1065,33 +1066,65 @@ export default function App() {
   const sc = t.statusColors;
 
   useEffect(() => {
-    (async () => {
-      try {
-        const v = await store.get("berrygood_cards");
-        if (v) setCards(JSON.parse(v));
-      } catch (e) {}
-      try {
-        const v = await store.get("berrygood_dark");
-        if (v) setDark(v === "1");
-      } catch (e) {}
+    const fetchCards = async () => {
+      const { data, error } = await supabase.from("cards").select("*");
+      if (!error) setCards(data);
       setLoaded(true);
-    })();
+    };
+    fetchCards();
   }, []);
 
   useEffect(() => {
-    if (loaded) store.set("berrygood_cards", JSON.stringify(cards));
-  }, [cards, loaded]);
-  useEffect(() => {
-    if (loaded) store.set("berrygood_dark", dark ? "1" : "0");
-  }, [dark, loaded]);
+    const channel = supabase
+      .channel("cards_channel")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "cards" },
+        (payload) => {
+          const newCard = payload.new;
+          setCards((prev) => {
+            const idx = prev.findIndex((c) => c.id === newCard.id);
+            if (idx !== -1) {
+              const updated = [...prev];
+              updated[idx] = newCard;
+              return updated;
+            } else {
+              return [...prev, newCard];
+            }
+          });
+        },
+      )
+      .subscribe();
 
-  const saveCard = (u) =>
-    setCards((p) => {
-      const ex = p.find((c) => c.id === u.id);
-      return ex ? p.map((c) => (c.id === u.id ? u : c)) : [...p, u];
+    // cleanup properly on unmount
+    return () => {
+      if (channel) channel.unsubscribe();
+    };
+  }, []);
+
+  // ── SAVE CARD
+  const saveCard = async (card) => {
+    setCards((prev) => {
+      const exists = prev.find((c) => c.id === card.id);
+      return exists
+        ? prev.map((c) => (c.id === card.id ? card : c))
+        : [...prev, card];
     });
-  const delCard = (id) => setCards((p) => p.filter((c) => c.id !== id));
 
+    const { error } = await supabase
+      .from("cards")
+      .upsert(card, { onConflict: "id" });
+    if (error) console.error("Supabase save error:", error.message);
+  };
+
+  // ── DELETE CARD
+  const delCard = async (id) => {
+    setCards((prev) => prev.filter((c) => c.id !== id));
+    const { error } = await supabase.from("cards").delete().eq("id", id);
+    if (error) console.error("Supabase delete error:", error.message);
+  };
+
+  // ── FILTERS
   const searchFiltered = search
     ? cards.filter(
         (c) =>
@@ -1100,10 +1133,12 @@ export default function App() {
           c.tags.some((tg) => tg.toLowerCase().includes(search.toLowerCase())),
       )
     : cards;
+
   const platFiltered =
     filter === "all"
       ? searchFiltered
       : searchFiltered.filter((c) => c.platform === filter);
+
   const bySt = STATUSES.reduce((a, s) => {
     a[s] = platFiltered.filter((c) => c.status === s);
     return a;
@@ -1113,7 +1148,6 @@ export default function App() {
     return (
       <div
         style={{
-          background: T.light.pageBgA,
           minHeight: "100vh",
           display: "flex",
           alignItems: "center",
@@ -1364,7 +1398,7 @@ export default function App() {
               style={{
                 display: "flex",
                 gap: "6px",
-                overflowX: "auto",
+                gridTemplateColumns: "repeat(6,minmax(205px,1fr))",
                 paddingBottom: "16px",
               }}
             >

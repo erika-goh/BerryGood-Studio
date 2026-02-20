@@ -1075,28 +1075,37 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Subscribe to changes on the "cards" table
     const channel = supabase
       .channel("cards_channel")
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "cards" },
         (payload) => {
-          const newCard = payload.new;
+          const { eventType, new: newCard, old: oldCard } = payload;
+
           setCards((prev) => {
-            const idx = prev.findIndex((c) => c.id === newCard.id);
-            if (idx !== -1) {
-              const updated = [...prev];
-              updated[idx] = newCard;
-              return updated;
-            } else {
-              return [...prev, newCard];
+            switch (eventType) {
+              case "INSERT":
+                // Avoid duplicates
+                if (prev.some((c) => c.id === newCard.id)) return prev;
+                return [...prev, newCard];
+
+              case "UPDATE":
+                return prev.map((c) => (c.id === newCard.id ? newCard : c));
+
+              case "DELETE":
+                return prev.filter((c) => c.id !== oldCard.id);
+
+              default:
+                return prev;
             }
           });
         },
       )
       .subscribe();
 
-    // cleanup properly on unmount
+    // Cleanup on unmount
     return () => {
       if (channel) channel.unsubscribe();
     };
@@ -1104,6 +1113,7 @@ export default function App() {
 
   // ── SAVE CARD
   const saveCard = async (card) => {
+    // Update local state immediately
     setCards((prev) => {
       const exists = prev.find((c) => c.id === card.id);
       return exists
@@ -1111,19 +1121,49 @@ export default function App() {
         : [...prev, card];
     });
 
-    const { error } = await supabase
-      .from("cards")
-      .upsert(card, { onConflict: "id" });
-    if (error) console.error("Supabase save error:", error.message);
+    try {
+      if (card.id) {
+        // Check if card already exists in Supabase
+        const { data: existing } = await supabase
+          .from("cards")
+          .select("id")
+          .eq("id", card.id)
+          .limit(1)
+          .single();
+
+        if (existing) {
+          // Update existing card
+          const { error } = await supabase
+            .from("cards")
+            .update(card)
+            .eq("id", card.id);
+          if (error) console.error("Supabase update error:", error);
+          return;
+        }
+      }
+
+      // Insert new card
+      const { data, error } = await supabase.from("cards").insert([card]);
+      if (error) console.error("Supabase insert error:", error);
+      else console.log("Card saved:", data);
+    } catch (err) {
+      console.error("Supabase save exception:", err);
+    }
   };
 
   // ── DELETE CARD
   const delCard = async (id) => {
+    // Update local state first
     setCards((prev) => prev.filter((c) => c.id !== id));
-    const { error } = await supabase.from("cards").delete().eq("id", id);
-    if (error) console.error("Supabase delete error:", error.message);
-  };
 
+    try {
+      const { error } = await supabase.from("cards").delete().eq("id", id);
+      if (error) console.error("Supabase delete error:", error);
+      else console.log("Card deleted:", id);
+    } catch (err) {
+      console.error("Supabase delete exception:", err);
+    }
+  };
   // ── FILTERS
   const searchFiltered = search
     ? cards.filter(
